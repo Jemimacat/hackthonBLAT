@@ -18,36 +18,47 @@ def scaning_and_extending(one_seed,database,word_size=11,threshold=11,max_gap=5,
         for db_word in database[gene].keys():
             db_pos = sorted(database[gene][db_word])
             for q_word in one_seed.keys():
-                this_score = score_nt_seq(db_word,q_word)
-                if this_score >= threshold:
-                    q_pos = sorted(one_seed[q_word])
-                    for i in db_pos:
-                        if not i in scores.keys():
-                            scores[i] = {}
-                        for j in q_pos:
-                            scores[i][j] = i-j ## pos diff
-                            db_words[i] = db_word
-                            q_words[j] = q_word
+                this_score = score_nt_seq(db_word,q_word)            
+                q_pos = sorted(one_seed[q_word])
+                for i in db_pos:
+                    db_words[i] = db_word
+                    if not i in scores.keys():
+                        scores[i] = {}
+                    for j in q_pos:
+                        q_words[j] = q_word
+                        if this_score >= threshold:
+                            scores[i][j] = i-j ## pos diff                       
                             if not i-j in pos_diff.keys():
                                 pos_diff[i-j] = 0
                             pos_diff[i-j] += 1
         (diff,count) = sorted(pos_diff.items(),key=lambda d:d[1], reverse=True)[0]
         ## find homologous regions
+        scores2 = {}
         db_pos = []
         q_pos = []
+        ## first filter
         for i in sorted(scores.keys()):
-            (j,this_diff) = sorted(scores[i].items(),key=lambda d:d[1],reverse=False)[0]
-            if this_diff <= max_gap:
-                if db_pos[-1]:
-                    if i-db_pos[-1]<=word_size+max_dist:
-                        db_pos.append(i)
-                        q_pos.append(j)
+            for (j,this_diff) in sorted(scores[i].items(),key=lambda d:d[1],reverse=False):
+                if abs(this_diff-diff) <= max_gap:
+                    if not i in scores2.keys():
+                        scores2[i] = {}
+                    scores2[i][j] = abs(this_diff - diff)
+
+        for i in sorted(scores2.keys()):
+            min_abs_dist = sorted(scores2[i].values())[0]
+            for (j,abs_dist) in sorted(scores2[i].items(),key=lambda d:d[1],reverse=False):
+                if abs_dist == min_abs_dist:
+                    if len(db_pos) > 0:
+                        if i-db_pos[-1]<=word_size+max_dist:
+                            db_pos.append(i)
+                            q_pos.append(j)
+                        else:
+                            db_pos = [i]
+                            q_pos = [j]
                     else:
                         db_pos = [i]
                         q_pos = [j]
-                else:
-                    db_pos = [i]
-                    q_pos = [j]
+                    break ## only fetch the first nearest hit
 
         ## extending
         db_seq = ''
@@ -57,25 +68,14 @@ def scaning_and_extending(one_seed,database,word_size=11,threshold=11,max_gap=5,
                 db_seq += db_words[db_pos[k]]
                 q_seq += q_words[q_pos[k]]
             else:
-                if q_pos[k] - q_pos[k-1] == word_size:
+                if db_pos[k] - db_pos[k-1] == word_size:
                     ## continue sequence
-                    if db_pos[k] - db_pos[k-1] == word_size:
+                    if q_pos[k] - q_pos[k-1] == word_size:
                         db_seq += db_words[db_pos[k]]
                         q_seq += q_words[q_pos[k]]
-                    ## deletion
-                    else:
-                        p = db_pos[k-1] + word_size
-                        while p < db_pos[k]:
-                            db_seq += db_words[p]
-                            q_seq += '-'*word_size
-                            p += word_size
-                        db_seq += db_words[db_pos[k]]
-                        q_seq += q_words[q_pos[k]]
-                
-                elif q_pos[k] - q_pos[k-1] > word_size:
                     ## insertion
-                    if db_pos[k] - db_pos[k-1] == word_size:
-                        for x in range(q_pos[k-1]+1,q_pos[k]):
+                    elif q_pos[k] - q_pos[k-1] > word_size:
+                        for x in range(q_pos[k-1]+1,q_pos[k]-word_size+1):
                             q_seq += q_words[x][-1]
                             db_seq += '-'
                         q_seq += q_words[q_pos[k]]
@@ -83,14 +83,37 @@ def scaning_and_extending(one_seed,database,word_size=11,threshold=11,max_gap=5,
                     else:
                         break
                 else:
-                    ## insertion
-                    if db_pos[k] - db_pos[k-1] == word_size:
-                        for x in range(q_pos[k] - q_pos[k-1],word_size):
-                            db_seq += '-'
+                    ## deletion
+                    if q_pos[k] - q_pos[k-1] == word_size:
+                        for x in range(db_pos[k-1]+1,db_pos[k]-word_size+1):
+                            q_seq += '-'
+                            if x in db_words.keys():
+                                db_seq += db_words[x]
                         q_seq += q_words[q_pos[k]]
                         db_seq += db_words[db_pos[k]]
                     else:
                         break
+        if not q_seq:
+            continue
+
+        ## check forward
+        if db_pos[-1]+word_size in db_words.keys():
+            next_db_word = db_words[db_pos[-1]+word_size]
+            for i in range(1,word_size+1):
+                if q_pos[-1]+i in q_words.keys() and q_words[q_pos[-1]+i][-1] == next_db_word[i-1]:
+                    db_seq += next_db_word[i-1]
+                    q_seq += q_words[q_pos[-1]+i][-1]
+                else:
+                    break
+        ## check backward
+        if db_pos[0]-word_size in db_words.keys():
+            prior_db_word = db_words[db_pos[0]-word_size]
+            for i in range(1,word_size+1):
+                if q_pos[0]-i in q_words.keys() and q_words[q_pos[0]-i][0] == prior_db_word[-i]:
+                    db_seq = prior_db_word[-i] + db_seq
+                    q_seq = q_words[q_pos[0]-i][0] + q_seq
+                else:
+                    break
 
         layer = ''
         score = score_nt_seq(q_seq,db_seq)
